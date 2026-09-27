@@ -4,7 +4,7 @@ A scroll-driven descent through the five zones of the ocean, from the sunlit sur
 
 [**View the live project**](https://wqryx.github.io/shinkai/) · [**View the source**](https://github.com/wqryx/shinkai)
 
-![Shinkai preview](og.png)
+![Shinkai preview](assets/shinkai.gif)
 
 ## What it does
 
@@ -39,6 +39,8 @@ Python is only used to serve the static files; any static server works. The page
 shinkai/
 ├── index.html   # the whole experience: markup, styles, copy, sound and 3D scene
 ├── og.png       # share card, 1200 × 630, rendered from the live scene
+├── assets/
+│   └── shinkai.gif
 └── README.md
 ```
 
