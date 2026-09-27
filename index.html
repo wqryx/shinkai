@@ -139,7 +139,8 @@ h2{font-family:var(--display);font-weight:700;font-size:clamp(34px,5.4vw,68px);l
 .fauna{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:clamp(14px,2vw,24px)}
 .creature{
   position:relative;padding:26px 24px 24px;border:1px solid var(--faint);
-  background:linear-gradient(160deg,rgba(143,243,221,.04),transparent 60%);
+  background:linear-gradient(160deg,rgba(143,243,221,.05),rgba(2,7,10,.62) 60%);
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
   display:grid;gap:8px;overflow:hidden;transition:border-color .5s;
 }
 .creature:hover{border-color:color-mix(in srgb,var(--zc,var(--lume)) 60%,transparent)}
@@ -167,12 +168,28 @@ h2{font-family:var(--display);font-weight:700;font-size:clamp(34px,5.4vw,68px);l
 footer{padding-block:120px 60px;max-width:1100px;display:grid;gap:26px}
 
 /* chapters: each section pins its content on screen and fades out before the next one arrives */
-main > .chapter{position:relative;padding:0!important;min-height:0!important;max-width:none!important;display:block!important}
+main > .chapter{position:relative;padding:0!important;min-height:0!important;max-width:none!important;display:block!important;align-content:normal!important}
 .chapter > .stage{position:sticky;top:0;min-height:100svh;display:grid;align-content:center;gap:40px;max-width:1100px;
   padding-block:110px 72px;will-change:opacity,transform}
 footer.chapter > .stage{gap:26px}
 .hero.chapter > .stage{align-content:end;padding-bottom:90px}
 .ledger.chapter h2{margin-bottom:30px}
+@media (min-width:1000px){
+  /* wide screens: text on the left, cards on the right, so a whole chapter fits on one screen and clears the gauge */
+  .chapter > .stage{max-width:min(1100px,calc(100% - 210px));padding-block:92px 52px}
+  .hero.chapter > .stage{padding-bottom:60px}
+  .hero.chapter h1{font-size:clamp(46px,min(9.5vw,13.5vh),136px)}
+  .ledger.chapter .log{display:grid;grid-template-columns:1fr 1fr;column-gap:44px}
+  .ledger.chapter .log li{grid-template-columns:64px 1fr auto;gap:14px}
+  .ledger.chapter h2{font-size:clamp(30px,3.4vw,52px)}
+  .zone-sec.chapter > .stage{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);column-gap:48px;align-items:center}
+  .zone-sec.chapter h2{font-size:clamp(30px,3.4vw,52px)}
+  .zone-sec.chapter .fauna{grid-template-columns:1fr;gap:12px}
+  .zone-sec.chapter .creature{padding:16px 20px;gap:4px}
+  .zone-sec.chapter .creature h3{font-size:19px}
+  .zone-sec.chapter .creature p{font-size:13px;line-height:1.55}
+  .zone-sec.chapter .facts{grid-template-columns:1fr 1fr}
+}
 footer .end{font-family:var(--display);font-size:clamp(36px,6vw,80px);line-height:1;font-weight:800}
 footer .end span{color:var(--ember);text-shadow:0 0 30px rgba(255,180,94,.5)}
 .up{
