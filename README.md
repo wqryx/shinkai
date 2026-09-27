@@ -1,5 +1,7 @@
 # Shinkai 深海
 
+**Live:** https://wqryx.github.io/shinkai/
+
 A scroll-driven descent through the five zones of the ocean, from the sunlit surface to the floor of the Challenger Deep at 10,935 m. Inspired by [Kage](https://mengto.github.io/kage/).
 
 - Live depth gauge with pressure, temperature, sunlight and reference points (Titanic, Everest, Shinkai 6500…)
