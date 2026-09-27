@@ -48,6 +48,12 @@ Shinkai is an original, independent design study inspired by the structure and a
 
 Depths, pressures, temperatures and records are rounded, commonly cited figures; pressure is estimated as 1 atm per 10 m of seawater plus the atmosphere. Three.js is © three.js authors and used under the MIT license; the typefaces are Shippori Mincho B1, Zen Kaku Gothic New and JetBrains Mono, served by Google Fonts under the SIL Open Font License.
 
+## En español
+
+Shinkai es un descenso por las cinco zonas del océano, desde la superficie iluminada por el sol hasta el fondo del Abismo Challenger, a 10.935 m, dibujado en tiempo real con Three.js. Al hacer scroll te hundes: un medidor marca la profundidad, la presión, la temperatura y la luz que queda, y cada zona tiene su criatura, desde medusas y peces linterna hasta un rape abisal que muerde, un pez trípode, un pez caracol translúcido y el batiscafo Trieste posado en el fondo. En las zonas oscuras tu cursor es la única luz. La página está en inglés y en español, tiene sonido ambiente generado en el navegador y un modo de descenso automático.
+
+[**Ver la web**](https://wqryx.github.io/shinkai/)
+
 ## License
 
 No license is currently granted for reuse or redistribution of the original Shinkai code or share artwork. Three.js and the fonts remain covered by their own licenses.
