@@ -917,110 +917,250 @@ function start(){
   motes.frustumCulled = false;
   scene.add(motes);
 
-  /* ---------- the anglerfish ---------- */
-  // one lighting model for the whole fish: every surface is lit only by the lure
-  const fishFade = { value: 0 };
-  function lureLit(base, { spec = 0.4, rim = [0.1, 0.25, 0.28], alpha = 1, side = THREE.FrontSide } = {}){
+  /* ---------- shared tools for the fish models ---------- */
+  // One organic material for skin, teeth, fins and organs. LIGHT 0 = lit by the anglerfish lure, 1 = lit by the cursor torch.
+  const ORG_VS = `
+    uniform float uTime; varying vec3 vN, vW, vP;
+    #ifdef MOUTH
+    attribute float aMouth; varying float vMouth;
+    #endif
+    void main(){
+      vec3 p = position;
+      #ifdef WAVE
+        float tt = clamp((p.x / 1.7 + 1.0) / 2.0, 0.0, 1.0);
+        p.z += sin(p.x * 2.6 - uTime * 2.2) * 0.2 * tt * tt;        // snailfish undulation, in snail space
+      #endif
+      #ifdef MOUTH
+        vMouth = aMouth;
+      #endif
+      vP = position;
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`;
+  const ORG_FS = `
+    uniform vec3 uBase, uSheen, uLure, uLureCol, uMouse;
+    uniform float uLureI, uFade, uSpec, uBump, uAlpha, uTrans, uAmb, uRays, uLift;
+    varying vec3 vN, vW, vP;
+    #ifdef MOUTH
+    varying float vMouth;
+    #endif
+    float h3(vec3 p){ return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+    float n3(vec3 p){
+      vec3 i = floor(p), f = fract(p); f = f*f*(3.0 - 2.0*f);
+      return mix(mix(mix(h3(i), h3(i + vec3(1,0,0)), f.x), mix(h3(i + vec3(0,1,0)), h3(i + vec3(1,1,0)), f.x), f.y),
+                 mix(mix(h3(i + vec3(0,0,1)), h3(i + vec3(1,0,1)), f.x), mix(h3(i + vec3(0,1,1)), h3(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+    void main(){
+      bool front = gl_FrontFacing;
+      vec3 N = normalize(vN); if(!front) N = -N;
+      if (uBump > 0.0){ vec3 q = vP * 26.0; N = normalize(N + uBump * (vec3(n3(q), n3(q + 7.1), n3(q + 13.7)) - 0.5)); }
+      vec3 V = normalize(cameraPosition - vW);
+    #if LIGHT == 0
+      vec3 L = uLure - vW; vec3 Lc = uLureCol; float d = length(L); L /= d;
+      float att = uLureI * 2.4 / (1.0 + d*d*0.5);
+    #else
+      vec3 L = uMouse + vec3(0.0, 0.0, 3.0) - vW; vec3 Lc = vec3(0.85, 0.93, 1.0); float d = length(L); L /= d;
+      float att = 2.6 / (1.0 + d*d*0.09);
+    #endif
+      float nl = dot(N, L);
+      float diff = max(nl, 0.0) + (nl * 0.5 + 0.5) * 0.18;
+      float spec = pow(max(dot(N, normalize(L + V)), 0.0), 50.0) * uSpec;
+      float fres = 1.0 - max(dot(N, V), 0.0);
+      float back = pow(max(dot(-L, V), 0.0), 3.0) * uTrans;             // light passing through thin tissue
+      vec3 base = uBase;
+    #if PATTERN == 1
+      base *= 0.85 + 0.3 * n3(vP * 7.0);                                 // velvet skin with small round pale pores
+      vec3 cell = floor(vP * 26.0), fc = fract(vP * 26.0) - 0.5;
+      base += vec3(0.07, 0.075, 0.08) * step(0.93, h3(cell)) * smoothstep(0.32, 0.12, length(fc));
+    #elif PATTERN == 2
+      float row = floor(vP.x * 36.0);                                    // overlapping scales
+      vec2 sc = vec2(fract(vP.x * 36.0), fract(vP.y * 36.0 + row * 0.5));
+      base *= 1.0 - smoothstep(0.32, 0.5, length(sc - vec2(0.3, 0.5))) * 0.4;
+    #elif PATTERN == 3
+      vec3 pc = floor(vP * 30.0), pf = fract(vP * 30.0) - 0.5;          // sparse round pigment specks
+      base = mix(base, base * 0.5, step(0.95, h3(pc)) * smoothstep(0.28, 0.1, length(pf)));
+    #endif
+    #ifdef MOUTH
+      base = mix(base, vec3(0.1, 0.015, 0.025), vMouth);
+    #endif
+    #ifdef INNER_MOUTH
+      if (!front) base = vec3(0.12, 0.02, 0.03);
+    #endif
+      float a = uAlpha;
+    #ifdef FIN
+      #if FIN == 1
+        float coord = atan(vP.y, vP.x) * uRays;                          // rays fanning out from the root
+      #else
+        float coord = vP.x * uRays;                                      // rays across a ribbon fin
+      #endif
+      float ray = 1.0 - smoothstep(0.05, 0.2, abs(fract(coord) - 0.5));
+      base *= 0.7 + 0.6 * ray;
+      a *= 0.4 + 0.6 * ray;
+    #endif
+      vec3 col = base * uAmb + (base + uLift) * Lc * diff * att + Lc * spec * att + uSheen * pow(fres, 1.6) * 0.5 + Lc * back * att * uBase * 1.5;
+      if (uAlpha < 1.0) a = mix(a, min(1.0, a * 2.4), pow(fres, 2.0));
+      gl_FragColor = vec4(col, a * uFade);
+    }`;
+  function makeMat(o){
+    const defines = { LIGHT: o.light === 'torch' ? 1 : 0, PATTERN: o.pattern || 0 };
+    if (o.wave) defines.WAVE = 1;
+    if (o.mouth) defines.MOUTH = 1;
+    if (o.innerMouth) defines.INNER_MOUTH = 1;
+    if (o.fin) defines.FIN = o.fin;
     return new THREE.ShaderMaterial({
-      transparent: true, side,
-      uniforms: { ...U, uFade: fishFade, uBase:{value:new THREE.Color(...base)}, uRim:{value:new THREE.Color(...rim)}, uSpec:{value:spec}, uAlpha:{value:alpha} },
-      vertexShader: `
-        varying vec3 vN, vW, vP;
-        void main(){
-          vP = position;
-          vN = normalize(mat3(modelMatrix) * normal);
-          vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz;
-          gl_Position = projectionMatrix * viewMatrix * w;
-        }`,
-      fragmentShader: `
-        uniform vec3 uBase, uRim, uLure, uLureCol; uniform float uLureI, uFade, uSpec, uAlpha;
-        varying vec3 vN, vW, vP;
-        float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
-        void main(){
-          vec3 N = normalize(vN); if(!gl_FrontFacing) N = -N;
-          vec3 V = normalize(cameraPosition - vW);
-          vec3 Lv = uLure - vW; float d = length(Lv); vec3 L = Lv / d;
-          float att = uLureI / (1.0 + d*d*0.55);
-          float nl = dot(N, L);
-          float diff = max(nl, 0.0) * 2.0 + (nl*0.5 + 0.5) * 0.22;
-          float spec = pow(max(dot(N, normalize(L + V)), 0.0), 48.0) * uSpec * 3.0;
-          float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-          float speck = step(0.94, hash(floor(vP * 22.0)));        // pale skin pores
-          vec3 col = uBase * (1.0 + speck*1.2) + uLureCol * (diff + spec) * att + uRim * fres * 0.45;
-          gl_FragColor = vec4(col, uAlpha * uFade);
-        }`
+      defines, transparent: true, side: o.side || THREE.FrontSide, depthWrite: o.depthWrite !== false,
+      uniforms: { ...U, uFade: o.fade,
+        uBase: { value: new THREE.Color(...o.base) }, uSheen: { value: new THREE.Color(...(o.sheen || [0.1, 0.2, 0.25])) },
+        uSpec: { value: o.spec ?? 0.5 }, uBump: { value: o.bump ?? 0 }, uAlpha: { value: o.alpha ?? 1 },
+        uTrans: { value: o.trans ?? 0 }, uAmb: { value: o.amb ?? 0.05 }, uRays: { value: o.rays ?? 10 }, uLift: { value: o.lift ?? 0 } },
+      vertexShader: ORG_VS, fragmentShader: ORG_FS
     });
   }
-
-  const fish = new THREE.Group();
-  const body = new THREE.Group(); fish.add(body);   // faces -x
-
-  // body: a sphere pushed into a heavy head that tapers to the tail
-  const bodyGeo = new THREE.SphereGeometry(1, 72, 48);
-  const bp = bodyGeo.attributes.position, v = new THREE.Vector3();
-  for (let i = 0; i < bp.count; i++){
-    v.fromBufferAttribute(bp, i);
-    const t = (v.x + 1) / 2;                          // 0 head .. 1 tail
-    const taper = 1 - 0.58 * Math.pow(t, 1.5);
-    let y = v.y * 1.05 * taper, z = v.z * 0.8 * taper;
-    if (v.y > 0) y *= 1 + 0.18 * (1 - t);            // domed forehead
-    if (v.y < 0 && t < 0.4) y *= 1 + 0.25 * (0.4 - t); // heavy lower jaw
-    bp.setXYZ(i, v.x * 1.55, y, z);
-  }
-  bodyGeo.computeVertexNormals();
-  body.add(new THREE.Mesh(bodyGeo, lureLit([0.018, 0.024, 0.028], { spec: 0.5, rim: [0.16, 0.36, 0.4] })));
-
-  // open maw
-  const maw = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 24), lureLit([0.03, 0.004, 0.008], { spec: 0.1, rim: [0.05, 0.0, 0.0] }));
-  maw.scale.set(0.26, 0.34, 0.52); maw.position.set(-1.42, -0.2, 0);
-  body.add(maw);
-
-  // teeth: needles around the rim of the maw, catching the lure light
-  const toothGeo = new THREE.ConeGeometry(0.032, 1, 6); toothGeo.translate(0, 0.5, 0);
-  const toothMat = lureLit([0.06, 0.07, 0.07], { spec: 0.7, rim: [0.25, 0.35, 0.35] });
-  const jaw = new THREE.Group(); jaw.position.set(-0.95, -0.3, 0); body.add(jaw);   // lower jaw hinge
-  for (let row = 0; row < 2; row++){
-    const n = row ? 9 : 11;
-    for (let i = 0; i < n; i++){
-      const a = -1.15 + (i / (n - 1)) * 2.3;           // sweep across the mouth
-      const tooth = new THREE.Mesh(toothGeo, toothMat);
-      const len = 0.16 + Math.abs(Math.sin(i * 2.7 + row)) * 0.22 + (i === 2 || i === n - 3 ? 0.12 : 0);
-      tooth.scale.set(1, len, 1);
-      tooth.position.set(-1.42 - Math.cos(a) * 0.24, row ? -0.5 : 0.1, Math.sin(a) * 0.48);
-      tooth.rotation.set(Math.sin(a) * 0.25, 0, (row ? 0.25 : Math.PI - 0.25));  // upper row points down
-      if (row){ tooth.position.sub(jaw.position); jaw.add(tooth); } else body.add(tooth);
+  // a tube along a curve that narrows from r0 to r1
+  function taperTube(pts, r0, r1, seg = 40, rad = 8){
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const g = new THREE.TubeGeometry(curve, seg, 1, rad, false);
+    const p = g.attributes.position, c = new THREE.Vector3(), v = new THREE.Vector3();
+    for (let i = 0; i <= seg; i++){
+      const u = i / seg; curve.getPointAt(u, c); const r = r0 + (r1 - r0) * u;
+      for (let j = 0; j <= rad; j++){ const k = i * (rad + 1) + j; v.fromBufferAttribute(p, k).sub(c).multiplyScalar(r).add(c); p.setXYZ(k, v.x, v.y, v.z); }
     }
+    g.computeVertexNormals();
+    return g;
+  }
+  const fanGeo = pts => { const s = new THREE.Shape(); s.moveTo(0, 0); pts.forEach(([x, y]) => s.lineTo(x, y)); s.lineTo(0, 0); return new THREE.ShapeGeometry(s, 4); };
+  const arcFan = (a0, a1, r, n = 16, wob = 0.03) => {
+    const pts = [];
+    for (let i = 0; i <= n; i++){ const a = a0 + (a1 - a0) * i / n, rr = r * (1 + wob * Math.sin(i * 2.3)); pts.push([Math.cos(a) * rr, Math.sin(a) * rr]); }
+    return fanGeo(pts);
+  };
+  // a curved fang: a cone bent along its length
+  function fang(len, r, bend){
+    const g = new THREE.ConeGeometry(r, len, 8, 6); g.translate(0, len / 2, 0);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++){ const y = p.getY(i) / len; p.setX(i, p.getX(i) + bend * len * y * y); }
+    g.computeVertexNormals();
+    return g;
+  }
+  // orient a mesh so its +y runs along `axis` and its bend (+x) leans toward `bendDir`
+  function place(mesh, pos, axis, bendDir){
+    const a = axis.clone().normalize();
+    const b = bendDir.clone().sub(a.clone().multiplyScalar(a.dot(bendDir))).normalize();
+    const c = new THREE.Vector3().crossVectors(b, a);
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(b, a, c));
+    mesh.position.copy(pos);
+  }
+  // find a point on a mesh surface by casting a ray at it (used to seat eyes, fins and the rod)
+  const surfRc = new THREE.Raycaster();
+  function hit(mesh, from, dir){
+    mesh.updateMatrixWorld(true);
+    surfRc.set(from, dir.clone().normalize());
+    const h = surfRc.intersectObject(mesh, false)[0];
+    return h ? { p: h.point.clone(), n: h.face.normal.clone() } : null;
   }
 
-  // eyes
-  const eyeMat = lureLit([0.12, 0.16, 0.16], { spec: 2.5, rim: [0.4, 0.6, 0.6] });
-  for (const z of [-0.5, 0.5]){
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 12), eyeMat);
-    eye.position.set(-0.95, 0.32, z); body.add(eye);
+  /* ---------- the anglerfish (Melanocetus johnsonii) ---------- */
+  // Head at -x. A velvet-black globe of a body, a hinged underbite jaw full of glassy fangs,
+  // and a rod on the forehead ending in a glowing bulb that lights everything else.
+  const fishFade = { value: 0 };
+  const fish = new THREE.Group();
+  const body = new THREE.Group(); fish.add(body);
+
+  const skinMat = makeMat({ fade: fishFade, base: [0.022, 0.026, 0.03], sheen: [0.13, 0.22, 0.28], spec: 0.45, bump: 0.18, pattern: 1, mouth: true, lift: 0.13 });
+  const jawMat  = makeMat({ fade: fishFade, base: [0.022, 0.026, 0.03], sheen: [0.13, 0.22, 0.28], spec: 0.45, bump: 0.18, pattern: 1, innerMouth: true, side: THREE.DoubleSide, lift: 0.13 });
+  const toothMat = makeMat({ fade: fishFade, base: [0.5, 0.5, 0.46], sheen: [0.3, 0.3, 0.28], spec: 1.6, alpha: 0.9, trans: 0.5 });
+  const eyeMat  = makeMat({ fade: fishFade, base: [0.02, 0.03, 0.035], sheen: [0.3, 0.45, 0.5], spec: 3.0, lift: 0.1 });
+  const finMat  = makeMat({ fade: fishFade, base: [0.03, 0.035, 0.04], sheen: [0.08, 0.14, 0.17], spec: 0.2, alpha: 0.75, fin: 1, rays: 9, side: THREE.DoubleSide, depthWrite: false, lift: 0.2 });
+  const rodMat  = makeMat({ fade: fishFade, base: [0.04, 0.045, 0.05], sheen: [0.12, 0.2, 0.24], spec: 0.9, lift: 0.3 });
+
+  // body: a sphere pushed into a domed head and a short tapering tail, with the roof of the mouth cut flat
+  const palY = X => -0.1 - 0.52 * THREE.MathUtils.smoothstep(X, -1.45, -0.2);
+  const bodyGeo = new THREE.SphereGeometry(1, 110, 72);
+  { const bp = bodyGeo.attributes.position, mouthA = new Float32Array(bp.count), v = new THREE.Vector3();
+    for (let i = 0; i < bp.count; i++){
+      v.fromBufferAttribute(bp, i);
+      const t = (v.x + 1) / 2;                                           // 0 snout .. 1 tail
+      const prof = t < 0.5 ? 1 : 1 - 0.78 * Math.pow((t - 0.5) / 0.5, 1.35);
+      const X = v.x * 1.5;
+      let Y = v.y * prof, Z = v.z * 0.84 * prof;
+      Y *= v.y > 0 ? 1 + 0.14 * (1 - t) : 1.05;                          // domed forehead, full belly
+      if (X < -0.2 && Y < palY(X)){ Y = palY(X); mouthA[i] = 1; }       // flat roof of the mouth
+      bp.setXYZ(i, X, Y, Z);
+    }
+    bodyGeo.computeVertexNormals();
+    bodyGeo.setAttribute('aMouth', new THREE.BufferAttribute(mouthA, 1)); }
+  const bodyMesh = new THREE.Mesh(bodyGeo, skinMat);
+  body.add(bodyMesh);
+
+  // throat: a dark cavity behind the teeth so an open mouth doesn't show open water through the head
+  { const throatMat = makeMat({ fade: fishFade, base: [0.07, 0.01, 0.018], sheen: [0.05, 0.0, 0.01], spec: 0.2, lift: 0.08 });
+    const th = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), throatMat); th.scale.set(0.62, 0.36, 0.52); th.position.set(-0.62, -0.58, 0); body.add(th); }
+  // lower jaw: a bowl hinged at the back of the gape, jutting past the upper jaw
+  const jaw = new THREE.Group(); jaw.position.set(-0.25, -0.62, 0); body.add(jaw);
+  const jawTilt = new THREE.Group(); jawTilt.rotation.z = -0.36; jaw.add(jawTilt);
+  { const g = new THREE.SphereGeometry(1, 64, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+    g.scale(0.72, 0.42, 0.66); g.translate(-0.66, 0, 0);
+    jawTilt.add(new THREE.Mesh(g, jawMat)); }
+
+  // lower fangs stand on the jaw rim and flare outward, so they show even with the mouth shut
+  for (let i = 0; i < 13; i++){
+    const a = -1.3 + i / 12 * 2.6;
+    const P = new THREE.Vector3(-0.66 - 0.7 * Math.cos(a), 0, 0.64 * Math.sin(a));
+    const out = new THREE.Vector3(P.x + 0.66, 0, P.z).normalize();
+    const big = [2, 4, 8, 10].includes(i);
+    const len = big ? 0.4 + 0.06 * Math.sin(i) : 0.13 + 0.1 * Math.abs(Math.sin(i * 2.1));
+    const tooth = new THREE.Mesh(fang(len, big ? 0.034 : 0.022, 0.35), toothMat);
+    place(tooth, P, new THREE.Vector3(0, 1, 0).addScaledVector(out, 0.3), out.clone().negate());
+    jawTilt.add(tooth);
+  }
+  // upper teeth hang from the edge of the palate, found by casting rays at the head
+  for (let i = 0; i < 15; i++){
+    const a = -1.3 + i / 14 * 2.6;
+    const dir = new THREE.Vector3(-Math.cos(a), 0, Math.sin(a));
+    const gx = -0.82 - 0.6 * Math.cos(a);
+    const origin = new THREE.Vector3(-0.82, palY(gx) + 0.012, 0).addScaledVector(dir, 3);
+    const h = hit(bodyMesh, origin, dir.clone().negate());
+    if (!h) continue;
+    const big = [3, 5, 9, 11].includes(i);
+    const len = big ? 0.33 : 0.09 + 0.09 * Math.abs(Math.sin(i * 1.7));
+    const tooth = new THREE.Mesh(fang(len, big ? 0.03 : 0.018, 0.3), toothMat);
+    place(tooth, h.p.addScaledVector(dir, -0.03), new THREE.Vector3(0, -1, 0).addScaledVector(dir, 0.12), dir.clone().negate());
+    body.add(tooth);
   }
 
-  // fins
-  const finMat = lureLit([0.03, 0.04, 0.045], { spec: 0.2, alpha: 0.7, side: THREE.DoubleSide, rim: [0.06, 0.14, 0.16] });
-  const fan = pts => { const s = new THREE.Shape(); s.moveTo(0, 0); pts.forEach(([x, y]) => s.lineTo(x, y)); s.lineTo(0, 0); return new THREE.ShapeGeometry(s); };
-  const tail = new THREE.Group(); tail.position.set(1.45, 0, 0);
-  tail.add(new THREE.Mesh(fan([[0.8, 0.62], [0.95, 0.3], [0.78, 0.05], [0.95, -0.25], [0.8, -0.58]]), finMat));
-  body.add(tail);
-  const dorsal = new THREE.Mesh(fan([[0.22, 0.42], [0.42, 0.36], [0.55, 0.02]]), finMat);
-  dorsal.position.set(0.55, 0.42, 0); body.add(dorsal);
+  // small bead eyes set into the head
+  for (const s of [1, -1]){
+    const h = hit(bodyMesh, new THREE.Vector3(-1.02, 0.28, 3 * s), new THREE.Vector3(0, 0, -s));
+    if (!h) continue;
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.055, 18, 12), eyeMat);
+    eye.position.copy(h.p).addScaledVector(h.n, 0.012); body.add(eye);
+  }
+
+  // fins, all with visible rays: a round tail, a dorsal and anal fin near the tail, two small pectorals
+  const tail = new THREE.Group(); tail.position.set(1.42, 0, 0); body.add(tail);
+  tail.add(new THREE.Mesh(arcFan(-0.95, 0.95, 0.72), finMat));
+  { const h = hit(bodyMesh, new THREE.Vector3(0.8, 3, 0), new THREE.Vector3(0, -1, 0));
+    const m = new THREE.Mesh(arcFan(0.3, 1.9, 0.36), finMat); m.position.copy(h ? h.p : new THREE.Vector3(0.8, 0.5, 0)); m.position.y -= 0.03; body.add(m); }
+  { const h = hit(bodyMesh, new THREE.Vector3(0.85, -3, 0), new THREE.Vector3(0, 1, 0));
+    const m = new THREE.Mesh(arcFan(-1.9, -0.35, 0.3), finMat); m.position.copy(h ? h.p : new THREE.Vector3(0.85, -0.5, 0)); m.position.y += 0.03; body.add(m); }
   const pecs = [];
-  for (const z of [-0.52, 0.52]){
-    const g = new THREE.Group(); g.position.set(-0.1, -0.25, z);
-    const m = new THREE.Mesh(fan([[0.45, -0.25], [0.55, 0.0], [0.4, 0.2]]), finMat);
-    m.rotation.x = z > 0 ? 0.6 : -0.6; g.add(m); body.add(g); pecs.push(g);
+  for (const s of [1, -1]){
+    const h = hit(bodyMesh, new THREE.Vector3(0.05, -0.15, 3 * s), new THREE.Vector3(0, 0, -s));
+    const g = new THREE.Group(); g.position.copy(h ? h.p : new THREE.Vector3(0.05, -0.15, 0.7 * s));
+    const m = new THREE.Mesh(arcFan(-0.9, 0.9, 0.34), finMat); m.rotation.y = -0.5 * s;
+    g.add(m); body.add(g); pecs.push(g);
   }
 
-  // illicium: the fishing rod grown from the forehead, with its glowing esca
-  const rod = new THREE.Group(); rod.position.set(-0.7, 0.98, 0); body.add(rod);
-  const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.08, 0.7, 0), new THREE.Vector3(-0.45, 1.2, 0),
-    new THREE.Vector3(-1.1, 1.08, 0), new THREE.Vector3(-1.4, 0.66, 0)]);
-  rod.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.022, 6), lureLit([0.03, 0.035, 0.04], { spec: 0.8 })));
-  const esca = new THREE.Mesh(new THREE.SphereGeometry(0.12, 24, 16), new THREE.ShaderMaterial({
+  // illicium: a tapering rod grown from the forehead, arching out over the mouth
+  const rod = new THREE.Group();
+  { const h = hit(bodyMesh, new THREE.Vector3(-0.78, 3, 0), new THREE.Vector3(0, -1, 0));
+    rod.position.copy(h ? h.p : new THREE.Vector3(-0.78, 1.0, 0)); rod.position.y -= 0.02; body.add(rod); }
+  rod.add(new THREE.Mesh(taperTube([
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.02, 0.55, 0), new THREE.Vector3(-0.35, 1.05, 0),
+    new THREE.Vector3(-0.95, 1.15, 0), new THREE.Vector3(-1.3, 0.8, 0), new THREE.Vector3(-1.38, 0.58, 0)], 0.032, 0.011, 60, 8), rodMat));
+  // esca: a glowing bulb with a few luminous threads hanging from it
+  const esca = new THREE.Mesh(new THREE.SphereGeometry(0.1, 28, 18), new THREE.ShaderMaterial({
     transparent: true, uniforms: { ...U, uFade: fishFade },
     vertexShader: `varying vec3 vN, vW; void main(){ vN = normalize(mat3(modelMatrix)*normal); vec4 w = modelMatrix*vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
     fragmentShader: `
@@ -1028,10 +1168,18 @@ function start(){
       void main(){
         float f = pow(1.0 - max(dot(normalize(vN), normalize(cameraPosition - vW)), 0.0), 2.0);
         vec3 core = mix(vec3(1.0, 0.95, 0.8), uLureCol, f);
-        gl_FragColor = vec4(core * (0.9 + uLureI*0.6), uFade);
+        gl_FragColor = vec4(core * (0.15 + uLureI * 1.4), uFade);
       }`
   }));
-  esca.position.set(-1.42, 0.6, 0); rod.add(esca);
+  esca.scale.set(1, 1.18, 1);
+  esca.position.set(-1.38, 0.48, 0); rod.add(esca);
+  const escaGlow = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 0.95, 0.45), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  for (let k = 0; k < 3; k++){
+    const zx = (k - 1) * 0.04;
+    rod.add(new THREE.Mesh(taperTube([
+      new THREE.Vector3(-1.38 + zx, 0.39, zx), new THREE.Vector3(-1.4 + zx * 2, 0.26, zx * 1.5),
+      new THREE.Vector3(-1.36 + zx * 3, 0.12 - k * 0.03, zx * 2)], 0.008, 0.002, 16, 5), escaGlow));
+  }
   const halo = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3)),
     new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, uniforms: { ...U, uFade: fishFade },
@@ -1169,43 +1317,63 @@ function start(){
   wallL.position.z = wallR.position.z = -8;
   const walls = new THREE.Group(); walls.add(wallL, wallR); scene.add(walls);
 
-  // the hadal snailfish: pale, translucent, all head and a long tapering tail
-  const snGeo = new THREE.SphereGeometry(1, 64, 32);
+  // the hadal snailfish: a big soft head, a tapering gelatinous body, organs and spine showing through the skin.
+  // Every part is built in snail space so one undulation formula moves skin, organs and fins together.
+  const snail = new THREE.Group();
+  const SNL = 1.7;
+  const snProf = X => { const t = (X / SNL + 1) / 2; return (0.6 * Math.pow(1 - t, 1.05) + 0.03) * (1 + 0.28 * Math.exp(-Math.pow((t - 0.14) / 0.13, 2))); };
+  const snGeo = new THREE.SphereGeometry(1, 120, 48);
   { const p = snGeo.attributes.position;
     for (let i = 0; i < p.count; i++){
-      const x = p.getX(i), t = (x + 1) / 2, prof = 0.62 * Math.pow(1 - t, 1.25) + 0.035;
-      p.setXYZ(i, x * 1.6, p.getY(i) * prof, p.getZ(i) * prof * 0.8);
+      const x = p.getX(i), t = (x + 1) / 2, X = x * SNL, pr = snProf(X);
+      p.setXYZ(i, X, p.getY(i) * pr * 1.02, p.getZ(i) * pr * (0.9 - 0.4 * t));   // tail flattens sideways
     }
     snGeo.computeVertexNormals(); }
-  const snail = new THREE.Group();
-  snail.add(new THREE.Mesh(snGeo, new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false,
-    uniforms: { ...U, uFade: hadFade },
-    vertexShader: `
-      uniform float uTime; varying vec3 vN, vW;
-      void main(){
-        vec3 p = position;
-        float tt = clamp((p.x / 1.6 + 1.0) / 2.0, 0.0, 1.0);
-        p.z += sin(p.x * 2.6 - uTime * 2.4) * 0.22 * tt * tt;        // slow eel-like undulation
-        vN = normalize(mat3(modelMatrix) * normal);
-        vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz;
-        gl_Position = projectionMatrix * viewMatrix * w;
-      }`,
-    fragmentShader: `
-      uniform vec3 uMouse; uniform float uFade; varying vec3 vN, vW;
-      void main(){
-        vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
-        float fres = pow(1.0 - abs(dot(N, V)), 2.0);
-        vec3 L = uMouse + vec3(0.0, 0.0, 3.0) - vW; float d = length(L); L /= d;
-        float lit = (max(dot(N, L), 0.0) * 0.8 + 0.15) * 4.0 / (1.0 + d*d*0.12);
-        vec3 skin = vec3(0.95, 0.8, 0.8);
-        vec3 col = skin * (0.05 + 0.35 * fres + lit * 0.35) + vec3(0.55, 0.2, 0.25) * (1.0 - fres) * lit * 0.12;
-        gl_FragColor = vec4(col, (0.22 + 0.6 * fres + lit * 0.1) * uFade);
-      }`
-  })));
+  const snSkin = makeMat({ fade: hadFade, light: 'torch', base: [0.95, 0.74, 0.76], sheen: [0.5, 0.4, 0.42], spec: 0.35, alpha: 0.2, trans: 1.2, amb: 0.06, pattern: 3, wave: true, depthWrite: false });
+  const snOrgan = (base) => makeMat({ fade: hadFade, light: 'torch', base, amb: 0.1, spec: 0.1, sheen: [0.1, 0.06, 0.06], wave: true });
+  const snFinMat = makeMat({ fade: hadFade, light: 'torch', base: [0.9, 0.72, 0.75], sheen: [0.4, 0.3, 0.32], alpha: 0.22, trans: 1.0, fin: 2, rays: 26, side: THREE.DoubleSide, wave: true, depthWrite: false, amb: 0.05, spec: 0.2 });
+  const snPecMat = makeMat({ fade: hadFade, light: 'torch', base: [0.9, 0.72, 0.75], sheen: [0.4, 0.3, 0.32], alpha: 0.25, trans: 1.0, fin: 1, rays: 7, side: THREE.DoubleSide, depthWrite: false, amb: 0.05, spec: 0.2 });
+
+  // organs first (opaque, drawn before the translucent skin)
+  const organ = (g, mat) => { const m = new THREE.Mesh(g, mat); m.renderOrder = 1; snail.add(m); };
+  organ(new THREE.SphereGeometry(1, 32, 16).scale(0.42, 0.2, 0.18).translate(-0.72, -0.15, 0), snOrgan([0.09, 0.06, 0.07]));   // gut, dark lining
+  organ(new THREE.SphereGeometry(1, 24, 12).scale(0.22, 0.14, 0.14).translate(-0.98, -0.07, 0), snOrgan([0.45, 0.2, 0.2]));    // liver
+  organ(new THREE.SphereGeometry(1, 16, 10).scale(0.09, 0.06, 0.07).translate(-1.3, 0.13, 0), snOrgan([0.55, 0.38, 0.4]));     // brain
+  organ(taperTube([new THREE.Vector3(-1.2, 0.12, 0), new THREE.Vector3(-0.6, 0.1, 0), new THREE.Vector3(0.4, 0.05, 0), new THREE.Vector3(1.2, 0.01, 0), new THREE.Vector3(1.64, 0, 0)], 0.02, 0.005, 80, 6),
+        snOrgan([0.36, 0.26, 0.27]));                                                                                          // spine
+  const skinMesh = new THREE.Mesh(snGeo, snSkin); skinMesh.renderOrder = 2; snail.add(skinMesh);
+
+  // continuous dorsal and anal fins running back into the tail, as one frilled ribbon above and below
+  function ribbon(sign){
+    const N = 90, pos = [], idx = [], x0 = -0.4, x1 = SNL * 0.99;
+    for (let i = 0; i <= N; i++){
+      const u = i / N, X = x0 + (x1 - x0) * u;
+      const edgeY = snProf(X) * 1.02 * Math.sqrt(Math.max(0, 1 - Math.pow(X / SNL, 2)));
+      const h = (0.05 + 0.2 * Math.sin(Math.min(1, u * 1.4) * Math.PI * 0.5)) * (1 + 0.08 * Math.sin(u * 60));
+      pos.push(X, sign * edgeY * 0.85, 0, X + 0.04, sign * (edgeY + h), 0);
+    }
+    for (let i = 0; i < N; i++){ const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+    return g;
+  }
+  for (const s of [1, -1]){ const m = new THREE.Mesh(ribbon(s), snFinMat); m.renderOrder = 3; snail.add(m); }
+
+  // broad pectoral lobes behind the head, slowly paddling
+  const snPecs = [];
+  for (const s of [1, -1]){
+    const g = new THREE.Group(); g.position.set(-0.78, -0.3, 0.3 * s);
+    const m = new THREE.Mesh(arcFan(-2.4, -0.7, 0.44, 18, 0.05), snPecMat); m.rotation.x = 0.55 * s; m.renderOrder = 3;
+    g.add(m); snail.add(g); snPecs.push(g);
+  }
+
+  // small dark eyes with a glint
   const snEyeMat = new THREE.MeshBasicMaterial({ color: 0x050506, transparent: true });
-  for (const z of [-0.26, 0.26]){
-    const e = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 8), snEyeMat); e.position.set(-1.22, 0.14, z); snail.add(e);
+  const snGlint = new THREE.MeshBasicMaterial({ color: 0xcfe8ea, transparent: true });
+  for (const s of [1, -1]){
+    const h = hit(skinMesh, new THREE.Vector3(-1.22, 0.2, 3 * s), new THREE.Vector3(0, 0, -s));
+    const at = h ? h.p : new THREE.Vector3(-1.22, 0.2, 0.3 * s);
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.045, 14, 10), snEyeMat); e.position.copy(at); snail.add(e);
+    const gl = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), snGlint); gl.position.copy(at).add(new THREE.Vector3(-0.015, 0.02, 0.035 * s)); snail.add(gl);
   }
   snail.rotation.y = Math.PI - 0.5;                   // head toward +x, turned to the camera
   scene.add(snail);
@@ -1358,23 +1526,60 @@ function start(){
   seabed.rotation.x = -Math.PI / 2; seabed.position.z = -14;
   scene.add(seabed);
 
-  // tripod fish: stands on three stiff fin rays, facing into the current, waiting
+  // tripod fish (Bathypterois grallator): a slim scaled body raised on three long fin rays,
+  // facing the current with its pectoral feelers spread forward to catch drifting food
   const triFade = { value: 0 };
-  const triMat = torchLit([0.14, 0.14, 0.16], triFade, { spec: 0.9, rim: [0.2, 0.25, 0.3] });
-  const tripod = new THREE.Group();
-  { const bg = new THREE.SphereGeometry(1, 40, 20), p = bg.attributes.position;
-    for (let i = 0; i < p.count; i++){ const x = p.getX(i), t = (x + 1) / 2, pr = 1 - 0.75 * Math.pow(t, 1.3); p.setXYZ(i, x * 0.75, p.getY(i) * 0.15 * pr, p.getZ(i) * 0.12 * pr); }
-    bg.computeVertexNormals(); tripod.add(new THREE.Mesh(bg, triMat)); }
   const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
-  tripod.add(rodBetween(V3(-0.15, -0.08, 0.06), V3(-0.05, -1.0, 0.32), 0.014, triMat));
-  tripod.add(rodBetween(V3(-0.15, -0.08, -0.06), V3(-0.05, -1.0, -0.32), 0.014, triMat));
-  tripod.add(rodBetween(V3(0.7, 0, 0), V3(1.05, -1.0, 0), 0.014, triMat));
-  const feelers = new THREE.Group(); feelers.position.set(-0.4, 0.02, 0); tripod.add(feelers);
+  const triSkin = makeMat({ fade: triFade, light: 'torch', base: [0.34, 0.33, 0.3], sheen: [0.35, 0.4, 0.45], spec: 0.45, pattern: 2, amb: 0.14 });
+  const triRay  = makeMat({ fade: triFade, light: 'torch', base: [0.3, 0.29, 0.26], sheen: [0.3, 0.34, 0.38], spec: 0.4, amb: 0.14 });
+  const triFin  = makeMat({ fade: triFade, light: 'torch', base: [0.28, 0.27, 0.25], sheen: [0.2, 0.24, 0.28], alpha: 0.55, fin: 1, rays: 10, side: THREE.DoubleSide, amb: 0.12, depthWrite: false });
+  const triEye  = makeMat({ fade: triFade, light: 'torch', base: [0.02, 0.02, 0.025], sheen: [0.3, 0.35, 0.4], spec: 3.0, amb: 0.1 });
+  const tripod = new THREE.Group();
+  const triGeo = new THREE.SphereGeometry(1, 80, 40);
+  { const p = triGeo.attributes.position;
+    for (let i = 0; i < p.count; i++){
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i), t = (x + 1) / 2;
+      const pr = t < 0.3 ? 1 - 0.3 * Math.pow((0.3 - t) / 0.3, 2) : 1 - 0.8 * Math.pow((t - 0.3) / 0.7, 1.2);
+      let Y = y * 0.17 * pr;
+      if (y > 0 && t < 0.35) Y *= 0.75 + 0.25 * (t / 0.35);        // flat, shovel-shaped head
+      p.setXYZ(i, x * 0.85, Y, z * 0.13 * pr);
+    }
+    triGeo.computeVertexNormals(); }
+  const triBody = new THREE.Mesh(triGeo, triSkin); tripod.add(triBody);
+
+  // the three stilts: two pelvic rays and the lower lobe of the tail, each ending in a small pad
+  const stilt = pts => new THREE.Mesh(taperTube(pts.map(a => V3(...a)), 0.017, 0.009, 30, 6), triRay);
+  const pad = (x, z) => { const f = new THREE.Mesh(new THREE.SphereGeometry(0.025, 10, 6), triRay); f.scale.set(1.6, 0.6, 1.6); f.position.set(x, -1.0, z); tripod.add(f); };
   for (const s of [-1, 1]){
-    feelers.add(rodBetween(V3(0, 0, 0.08 * s), V3(-0.35, 0.55, 0.35 * s), 0.006, triMat));
-    feelers.add(rodBetween(V3(-0.35, 0.55, 0.35 * s), V3(-0.3, 1.1, 0.42 * s), 0.004, triMat));
+    tripod.add(stilt([[-0.05, -0.12, 0.05 * s], [0.0, -0.5, 0.2 * s], [0.04, -0.85, 0.3 * s], [0.06, -1.0, 0.33 * s]]));
+    pad(0.06, 0.33 * s);
+    const pm = new THREE.Mesh(fanGeo([[0.06, -0.12], [0.16, -0.3], [0.02, -0.38]]), triFin); pm.position.set(-0.06, -0.1, 0.05 * s); tripod.add(pm);
   }
-  for (const s of [-1, 1]){ const e = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 6), triMat); e.position.set(-0.6, 0.04, 0.07 * s); tripod.add(e); }
+  tripod.add(stilt([[0.72, -0.02, 0], [0.9, -0.35, 0], [1.02, -0.75, 0], [1.06, -1.0, 0]]));
+  pad(1.06, 0);
+  // upper tail lobe
+  { const tf = new THREE.Mesh(fanGeo([[0.3, 0.24], [0.38, 0.13], [0.32, 0.0], [0.14, -0.1]]), triFin); tf.position.set(0.72, 0, 0); tripod.add(tf); }
+  // tall dorsal sail
+  { const h = hit(triBody, V3(-0.2, 2, 0), V3(0, -1, 0));
+    const df = new THREE.Mesh(arcFan(0.45, 1.75, 0.34, 14, 0.04), triFin); df.position.copy(h ? h.p : V3(-0.2, 0.14, 0)); df.position.y -= 0.01; tripod.add(df); }
+  // small anal fin
+  { const h = hit(triBody, V3(0.35, -2, 0), V3(0, 1, 0));
+    const af = new THREE.Mesh(arcFan(-1.6, -0.35, 0.16, 10, 0.04), triFin); af.position.copy(h ? h.p : V3(0.35, -0.08, 0)); tripod.add(af); }
+  // tiny eyes: it hunts by touch more than sight
+  for (const s of [1, -1]){
+    const h = hit(triBody, V3(-0.6, 0.05, 2 * s), V3(0, 0, -s));
+    if (!h) continue;
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.02, 10, 8), triEye); e.position.copy(h.p).addScaledVector(h.n, 0.004); tripod.add(e);
+  }
+  // pectoral feelers: four long rays each side arching forward and up
+  const feelers = new THREE.Group(); feelers.position.set(-0.3, 0.0, 0); tripod.add(feelers);
+  for (const s of [-1, 1]){
+    for (let k = 0; k < 4; k++){
+      const sp = 0.12 + k * 0.07, reach = 1.0 + k * 0.12;
+      feelers.add(new THREE.Mesh(taperTube([V3(0, 0, 0.1 * s), V3(-0.2 - k * 0.03, 0.35, (0.1 + sp) * s),
+        V3(-0.35 - k * 0.05, 0.75, (0.12 + sp * 1.4) * s), V3(-0.3 - k * 0.06, reach, (0.14 + sp * 1.6) * s)], 0.008, 0.002, 30, 5), triRay));
+    }
+  }
   tripod.rotation.y = 0.5;
   scene.add(tripod);
 
@@ -1530,7 +1735,7 @@ function start(){
   (S.langHooks || []).push(() => { tipKey = '?'; });
   function updateTip(){
     let key = null;
-    if (hasMouse){
+    if (hasMouse && stalk < 0.05 && biteT < 0){        // stay out of the way while the anglerfish stalks and bites
       rc.setFromCamera(ndc, camera);
       const cands = [];
       if (jellyFade.value > 0.5) jellies.forEach(j => cands.push([j.g.children[0], 'jelly']));
@@ -1591,7 +1796,7 @@ function start(){
   const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a)/(b - a))); return t*t*(3 - 2*t); };
   const lurePos = new THREE.Vector3();
   let lureTarget = 0, fishIn = 0, fishX = null, fishY = 0.25, lastT = 0;
-  let lastMd = 99, hoverT = 0, biteT = -1, biteCool = 0, snapped = false;
+  let lastMd = 99, hoverT = 0, biteT = -1, biteCool = 0, snapped = false, stalk = 0, lureOut = 0, shake = 0, biteDY = 0;
 
   function draw(){
     const t = reduce ? 12 : clock.getElapsedTime();
@@ -1622,33 +1827,40 @@ function start(){
     fish.visible = fishIn > 0.01;
     const halfW = Math.tan(THREE.MathUtils.degToRad(22.5)) * 10 * camera.aspect;
     const sc = small ? 0.62 : 1;
-    fish.scale.setScalar(sc);
+    fish.scale.setScalar(sc * 1.25);
     // it swims forward on its own clock, never tied to the scroll direction;
     // after leaving the left edge it comes round again from the right at a new height
-    const edge = halfW + 4 * sc;
+    const edge = halfW + 5 * sc;
     const dt = Math.min(0.1, t - lastT); lastT = t;
     if (reduce) fishX = small ? halfW * 0.35 : Math.min(halfW * 0.55, 5.2);
     else if (fishX === null || (fishIn < 0.02 && want === 0)) fishX = halfW * 0.6 + 2;
-    else if (want > 0 || fishIn > 0.02) fishX -= dt * 0.55;
+    else if (want > 0 || fishIn > 0.02) fishX -= dt * 0.55 * (1 - 0.9 * stalk);   // it stops to stalk
     if (fishX < -edge){ fishX = edge; fishY = -1.4 + Math.random() * 2.6; }
-    // the bite: hold the cursor on the lure, the jaw drops, the fish lunges and snaps shut
+    // stalking and the bite: rest the cursor on the lure and the fish stops, its jaw drops a little
+    // and the lure flickers; then it strikes toward the cursor, snaps shut and the light goes out
     biteCool = Math.max(0, biteCool - dt);
     if (biteT < 0){
-      hoverT = (lastMd < 1.0 && fishIn > 0.8 && biteCool === 0) ? hoverT + dt : Math.max(0, hoverT - dt * 2);
-      if (hoverT > 1.2){ biteT = 0; hoverT = 0; snapped = false; }
+      const near = lastMd < 1.3 && fishIn > 0.8 && biteCool === 0;
+      hoverT = near ? hoverT + dt : Math.max(0, hoverT - dt * 1.5);
+      if (hoverT > 0.9){ biteT = 0; hoverT = 0; snapped = false; biteDY = THREE.MathUtils.clamp(mouseW.y - fish.position.y, -0.8, 0.8); }
     }
+    stalk = Math.min(1, hoverT / 0.9);
     let open = 0, lunge = 0;
     if (biteT >= 0){
-      biteT += dt;
-      const bp = biteT / 1.1;
-      open = bp < 0.45 ? Math.sin(bp / 0.45 * Math.PI / 2) : bp < 0.55 ? 1 - (bp - 0.45) / 0.1 : 0;
-      lunge = Math.sin(Math.min(bp / 0.75, 1) * Math.PI) * 0.8 * sc;
-      if (bp >= 0.5 && !snapped){ snapped = true; U.uLureI.value *= 0.15; dispatchEvent(new Event('shinkai:bite')); }
-      if (bp >= 1){ biteT = -1; biteCool = 4; }
+      biteT += dt;                                             // the whole strike lasts one second
+      open = biteT < 0.32 ? Math.sin(biteT / 0.32 * Math.PI / 2) : biteT < 0.42 ? 1 - (biteT - 0.32) / 0.1 : 0;
+      lunge = Math.sin(Math.min(biteT / 0.85, 1) * Math.PI);
+      if (biteT >= 0.4 && !snapped){ snapped = true; lureOut = 1.4; shake = 1; dispatchEvent(new Event('shinkai:bite')); }
+      if (biteT >= 1){ biteT = -1; biteCool = 3; }
     }
-    jaw.rotation.z = open * 0.6;
-    maw.scale.y = 0.34 * (1 + open * 0.7); maw.position.y = -0.2 - open * 0.1;
-    fish.position.set(fishX - lunge, fishY + Math.sin(t*0.55) * 0.18, 0);
+    lureOut = Math.max(0, lureOut - dt);
+    shake = Math.max(0, shake - dt * 4);
+    camera.position.x = shake * Math.sin(t * 70) * 0.06;
+    camera.position.y = shake * Math.cos(t * 55) * 0.04;
+    // at rest the jaw hangs slightly open and breathes; stalking opens it a little more
+    jaw.rotation.z = Math.max(open * 0.95, 0.05 + 0.03 * Math.sin(t * 1.4) + stalk * 0.18);
+    escaGlow.opacity = fishIn * (lureOut > 0 ? 0.1 : 1);
+    fish.position.set(fishX - lunge * 1.3 * sc, fishY + Math.sin(t*0.55) * 0.18 + lunge * biteDY * 0.5, 0);
     const aim = hasMouse ? Math.atan2(mouseW.y - fish.position.y, fish.position.x - mouseW.x) : 0;
     fish.rotation.z += (THREE.MathUtils.clamp(-aim * 0.35, -0.22, 0.22) - fish.rotation.z) * 0.03;
     body.rotation.y = Math.sin(t*0.9) * 0.05;
@@ -1663,8 +1875,9 @@ function start(){
     const ls = camera.position.z / (camera.position.z - lurePos.z);
     const md = hasMouse ? Math.hypot(lurePos.x * ls - mouseW.x, lurePos.y * ls - mouseW.y) : 99;
     lastMd = md;
-    lureTarget = 0.85 + 0.12*Math.sin(t*4.2) + 0.06*Math.sin(t*11.0) + (1 - smooth(0.5, 3.0, md)) * 0.45;
-    U.uLureI.value += (lureTarget * fishIn - U.uLureI.value) * (snapped && biteT >= 0 ? 0.02 : 0.12);
+    lureTarget = (0.85 + 0.12*Math.sin(t*4.2) + 0.06*Math.sin(t*11.0) + (1 - smooth(0.5, 3.0, md)) * 0.45
+                 + stalk * 0.7 * (0.5 + 0.5 * Math.sin(t * 22.0))) * (lureOut > 0 ? 0.03 : 1);
+    U.uLureI.value += (lureTarget * fishIn - U.uLureI.value) * (lureOut > 0 ? 0.5 : 0.08);
     U.uLure.value.copy(lurePos);
 
     // twilight school
@@ -1676,7 +1889,8 @@ function start(){
     // hadal trench: the walls close in the deeper you go, the snailfish drifts past
     const hWant = smooth(5600, 6600, depth);
     hadIn += (hWant - hadIn) * (reduce ? 1 : 0.04);
-    hadFade.value = hadIn; snEyeMat.opacity = hadIn;
+    hadFade.value = hadIn; snEyeMat.opacity = snGlint.opacity = hadIn;
+    snPecs.forEach((g, i) => g.rotation.y = Math.sin(t * 1.6 + i * Math.PI) * 0.3);
     walls.visible = snail.visible = hadIn > 0.01;
     if (walls.visible){
       const close = smooth(6000, MAX, depth);
